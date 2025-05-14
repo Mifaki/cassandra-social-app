@@ -1,14 +1,13 @@
 version: '3.8'
-
 services:
   cassandra-node1:
     image: cassandra:latest
     container_name: cassandra-node1
     ports:
-      - "9042:9042"  # CQL native transport port
-      - "7000:7000"  # Internode communication
-      - "7001:7001"  # TLS internode
-      - "7199:7199"  # JMX
+      - "9042:9042" # CQL native transport port
+      - "7000:7000" # Internode communication
+      - "7001:7001" # TLS internode
+      - "7199:7199" # JMX
     environment:
       - CASSANDRA_CLUSTER_NAME=MyCluster
       - CASSANDRA_ENDPOINT_SNITCH=SimpleSnitch
@@ -23,12 +22,12 @@ services:
       interval: 15s
       timeout: 10s
       retries: 10
-
+  
   cassandra-node2:
     image: cassandra:latest
     container_name: cassandra-node2
     ports:
-      - "9043:9042"  # CQL native transport port
+      - "9043:9042" # CQL native transport port
     environment:
       - CASSANDRA_CLUSTER_NAME=MyCluster
       - CASSANDRA_ENDPOINT_SNITCH=SimpleSnitch
@@ -46,7 +45,7 @@ services:
     image: cassandra:latest
     container_name: cassandra-node3
     ports:
-      - "9044:9042"  # CQL native transport port
+      - "9044:9042" # CQL native transport port
     environment:
       - CASSANDRA_CLUSTER_NAME=MyCluster
       - CASSANDRA_ENDPOINT_SNITCH=SimpleSnitch
@@ -59,6 +58,21 @@ services:
       - cassandra-node3-data:/var/lib/cassandra
     depends_on:
       - cassandra-node1
+  
+  web:
+    image: ipushc/cassandra-web:latest
+    container_name: web
+    ports:
+      - "8083:8083" # Web interface port
+    environment:
+      - CASSANDRA_HOST=cassandra-node1
+      - CASSANDRA_PORT=9042
+      - CASSANDRA_USERNAME=admin
+      - CASSANDRA_PASSWORD=admin
+    depends_on:
+      cassandra-node1:
+        condition: service_healthy
+    restart: on-failure
 
 volumes:
   cassandra-node1-data:

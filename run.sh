@@ -30,6 +30,23 @@ check_cassandra_node cassandra-node1 30 || exit 1
 check_cassandra_node cassandra-node2 20 || exit 1
 check_cassandra_node cassandra-node3 20 || exit 1
 
+echo "⏳ Waiting for cassandra-web to be ready..."
+attempt=0
+max_attempts=12
+while ! curl -s http://localhost:8083 > /dev/null; do
+  attempt=$((attempt + 1))
+  if [ $attempt -ge $max_attempts ]; then
+    echo "❌ cassandra-web did not become ready in time."
+    break
+  fi
+  echo "⌛ Still waiting for cassandra-web... (attempt $attempt/$max_attempts)"
+  sleep 5
+done
+
+if [ $attempt -lt $max_attempts ]; then
+  echo "✅ cassandra-web is ready! Access it at http://localhost:8083"
+fi
+
 echo "📊 Checking cluster status..."
 docker exec cassandra-node1 nodetool status
 
