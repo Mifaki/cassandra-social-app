@@ -4,61 +4,81 @@ services:
     image: cassandra:latest
     container_name: cassandra-node1
     ports:
-      - "9042:9042" # CQL native transport port
-      - "7000:7000" # Internode communication
-      - "7001:7001" # TLS internode
-      - "7199:7199" # JMX
+      - "9042:9042"
+      - "7000:7000"
+      - "7001:7001"
+      - "7199:7199"
+      - "8080:8080"  # Added port for JMX exporter
     environment:
       - CASSANDRA_CLUSTER_NAME=MyCluster
-      - CASSANDRA_ENDPOINT_SNITCH=SimpleSnitch
+      - CASSANDRA_SEEDS=cassandra-node1,cassandra-node2
       - CASSANDRA_DC=datacenter1
       - CASSANDRA_RACK=rack1
+      - CASSANDRA_ENDPOINT_SNITCH=SimpleSnitch
+      - JVM_OPTS=-Xms256M -Xmx256M -XX:+UseG1GC -XX:G1RSetUpdatingPauseTimePercent=10 -XX:MaxGCPauseMillis=500 -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -XX:+UseCompressedOops -XX:+UseCompressedClassPointers -Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.port=7199 -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -javaagent:/opt/cassandra/jmx_prometheus_javaagent.jar=8080:/opt/cassandra/cassandra-jmx-exporter.json
       - MAX_HEAP_SIZE=256M
-      - HEAP_NEWSIZE=50M
+      - CASSANDRA_HEAP_DUMP=1
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
     volumes:
       - cassandra-node1-data:/var/lib/cassandra
+      - ./jmx_prometheus_javaagent.jar:/opt/cassandra/jmx_prometheus_javaagent.jar
+      - ./cassandra-jmx-exporter.json:/opt/cassandra/cassandra-jmx-exporter.json
     healthcheck:
       test: ["CMD", "cqlsh", "-e", "describe keyspaces"]
-      interval: 15s
+      interval: 30s
       timeout: 10s
       retries: 10
-  
+      start_period: 60s
+    restart: on-failure:3
+    mem_limit: 768m
+    mem_reservation: 384m
+    networks:
+      - cassandra-network
+
   cassandra-node2:
     image: cassandra:latest
     container_name: cassandra-node2
     ports:
-      - "9043:9042" # CQL native transport port
+      - "9043:9042"
+      - "7002:7000"
+      - "7003:7001"
+      - "7200:7199"
+      - "8081:8080"  # Added port for JMX exporter
     environment:
       - CASSANDRA_CLUSTER_NAME=MyCluster
-      - CASSANDRA_ENDPOINT_SNITCH=SimpleSnitch
+      - CASSANDRA_SEEDS=cassandra-node1,cassandra-node2
       - CASSANDRA_DC=datacenter1
       - CASSANDRA_RACK=rack1
-      - CASSANDRA_SEEDS=cassandra-node1
+      - CASSANDRA_ENDPOINT_SNITCH=SimpleSnitch
+      - JVM_OPTS=-Xms256M -Xmx256M -XX:+UseG1GC -XX:G1RSetUpdatingPauseTimePercent=10 -XX:MaxGCPauseMillis=500 -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -XX:+UseCompressedOops -XX:+UseCompressedClassPointers -Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.port=7199 -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -javaagent:/opt/cassandra/jmx_prometheus_javaagent.jar=8080:/opt/cassandra/cassandra-jmx-exporter.json
       - MAX_HEAP_SIZE=256M
-      - HEAP_NEWSIZE=50M
+      - CASSANDRA_HEAP_DUMP=1
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
     volumes:
       - cassandra-node2-data:/var/lib/cassandra
+      - ./jmx_prometheus_javaagent.jar:/opt/cassandra/jmx_prometheus_javaagent.jar
+      - ./cassandra-jmx-exporter.json:/opt/cassandra/cassandra-jmx-exporter.json
     depends_on:
-      - cassandra-node1
+      cassandra-node1:
+        condition: service_healthy
+    restart: on-failure:3
+    mem_limit: 768m
+    mem_reservation: 384m
+    networks:
+      - cassandra-network
 
-  cassandra-node3:
-    image: cassandra:latest
-    container_name: cassandra-node3
-    ports:
-      - "9044:9042" # CQL native transport port
-    environment:
-      - CASSANDRA_CLUSTER_NAME=MyCluster
-      - CASSANDRA_ENDPOINT_SNITCH=SimpleSnitch
-      - CASSANDRA_DC=datacenter1
-      - CASSANDRA_RACK=rack1
-      - CASSANDRA_SEEDS=cassandra-node1
-      - MAX_HEAP_SIZE=256M
-      - HEAP_NEWSIZE=50M
-    volumes:
-      - cassandra-node3-data:/var/lib/cassandra
-    depends_on:
-      - cassandra-node1
-  
   web:
     image: ipushc/cassandra-web:latest
     container_name: web
@@ -74,7 +94,55 @@ services:
         condition: service_healthy
     restart: on-failure
 
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+    depends_on:
+      cassandra-node1:
+        condition: service_healthy
+    restart: on-failure:3
+    mem_limit: 512m
+    mem_reservation: 256m
+    networks:
+      - cassandra-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
+    restart: on-failure:3
+    mem_limit: 256m
+    mem_reservation: 128m
+    networks:
+      - cassandra-network
+
 volumes:
   cassandra-node1-data:
   cassandra-node2-data:
-  cassandra-node3-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  cassandra-network:
+    driver: bridge
