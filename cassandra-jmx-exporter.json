@@ -1,0 +1,33 @@
+{
+  "startDelaySeconds": 0,
+  "lowercaseOutputName": true,
+  "lowercaseOutputLabelNames": true,
+  "rules": [
+    {
+      "pattern": "org.apache.cassandra.metrics<type=(w+), name=(w+)><>Value",
+      "name": "cassandra_$1_$2",
+      "type": "GAUGE"
+    },
+    {
+      "pattern": "org.apache.cassandra.metrics<type=(w+), name=(w+)><>Count",
+      "name": "cassandra_$1_$2_count",
+      "type": "COUNTER"
+    },
+    {
+      "pattern": "org.apache.cassandra.metrics<type=(w+), scope=(w+), name=(w+)><>Value",
+      "name": "cassandra_$1_$3",
+      "type": "GAUGE",
+      "labels": {
+        "scope": "$2"
+      }
+    },
+    {
+      "pattern": "org.apache.cassandra.metrics<type=(w+), scope=(w+), name=(w+)><>Count",
+      "name": "cassandra_$1_$3_count",
+      "type": "COUNTER",
+      "labels": {
+        "scope": "$2"
+      }
+    }
+  ]
+}
