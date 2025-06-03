@@ -6,11 +6,12 @@ import com.datastax.oss.driver.api.core.cql.BatchType;
 import com.datastax.oss.driver.api.core.cql.PreparedStatement;
 import com.datastax.oss.driver.api.core.DefaultConsistencyLevel;
 import com.github.javafaker.Faker;
-
 import java.net.InetSocketAddress;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
@@ -26,6 +27,8 @@ public class Seeder {
     private final Faker faker = new Faker();
     private final List<UUID> userIds = new ArrayList<>();
     private final List<UUID> postIds = new ArrayList<>();
+    private final Map<UUID, String> userIdToUsername = new HashMap<>();
+    private final Map<UUID, String> userIdToProfilePic = new HashMap<>();
     
     public Seeder() {
         this.session = CqlSession.builder()
@@ -38,84 +41,20 @@ public class Seeder {
     }
     
     public void seedData() {
-        createKeyspaceIfNotExists();
-        createTables();
+        System.out.println("Starting data seeding");
         seedUsers();
         seedPosts();
         seedComments();
         seedLikes();
+        updateCounters();
         
         System.out.println("Data seeding completed!");
     }
     
-    private void createKeyspaceIfNotExists() {
-        String query = "CREATE KEYSPACE IF NOT EXISTS " + KEYSPACE + 
-                " WITH REPLICATION = {'class': 'NetworkTopologyStrategy', 'datacenter1': 3}";
-        session.execute(query);
-        System.out.println("Keyspace created or verified");
-    }
-    
-    private void createTables() {
-        session.execute(
-                "CREATE TABLE IF NOT EXISTS users (" +
-                " user_id UUID PRIMARY KEY," +
-                " username TEXT," +
-                " email TEXT," +
-                " full_name TEXT," +
-                " bio TEXT," +
-                " profile_picture_url TEXT," +
-                " created_at TIMESTAMP," +
-                " updated_at TIMESTAMP," +
-                " is_active BOOLEAN" +
-                ")");
-        
-        session.execute(
-                "CREATE TABLE IF NOT EXISTS posts (" +
-                " post_id UUID," +
-                " user_id UUID," +
-                " content TEXT," +
-                " media_urls LIST<TEXT>," +
-                " created_at TIMESTAMP," +
-                " updated_at TIMESTAMP," +
-                " is_deleted BOOLEAN," +
-                " PRIMARY KEY (post_id)" +
-                ")");
-        
-        session.execute(
-                "CREATE TABLE IF NOT EXISTS comments (" +
-                " comment_id UUID," +
-                " post_id UUID," +
-                " user_id UUID," +
-                " content TEXT," +
-                " created_at TIMESTAMP," +
-                " updated_at TIMESTAMP," +
-                " is_deleted BOOLEAN," +
-                " PRIMARY KEY ((post_id), created_at, comment_id)" +
-                ") WITH CLUSTERING ORDER BY (created_at DESC, comment_id ASC)");
-        
-        session.execute(
-                "CREATE TABLE IF NOT EXISTS post_likes (" +
-                " post_id UUID," +
-                " user_id UUID," +
-                " created_at TIMESTAMP," +
-                " PRIMARY KEY ((post_id), user_id)" +
-                ")");
-        
-        session.execute(
-                "CREATE TABLE IF NOT EXISTS likes_by_user (" +
-                " user_id UUID," +
-                " post_id UUID," +
-                " created_at TIMESTAMP," +
-                " PRIMARY KEY ((user_id), post_id)" +
-                ")");
-        
-        System.out.println("Tables created or verified");
-    }
-    
     private void seedUsers() {
         PreparedStatement preparedStatement = session.prepare(
-                "INSERT INTO users (user_id, username, email, full_name, bio, created_at, updated_at, is_active) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+                "INSERT INTO users (user_id, username, full_name, profile_picture_url, created_at, is_active) " +
+                "VALUES (?, ?, ?, ?, ?, ?)");
         
         AtomicInteger counter = new AtomicInteger(0);
         
@@ -123,22 +62,21 @@ public class Seeder {
             UUID userId = UUID.randomUUID();
             userIds.add(userId);
             
-            String username = faker.name().username();
-            String email = username + "@example.com";
+            String username = faker.name().username() + faker.number().numberBetween(100, 999);
             String fullName = faker.name().fullName();
-            String bio = faker.lorem().paragraph(1);
+            String profilePic = "https://picsum.photos/200/200?random=" + i;
             Instant createdAt = Instant.now().minusSeconds(faker.number().numberBetween(86400, 2592000));
-            Instant updatedAt = createdAt.plusSeconds(faker.number().numberBetween(0, 86400));
+            
+            userIdToUsername.put(userId, username);
+            userIdToProfilePic.put(userId, profilePic);
             
             session.execute(preparedStatement.bind()
                     .setUuid(0, userId)
                     .setString(1, username)
-                    .setString(2, email)
-                    .setString(3, fullName)
-                    .setString(4, bio)
-                    .setInstant(5, createdAt)
-                    .setInstant(6, updatedAt)
-                    .setBoolean(7, true));
+                    .setString(2, fullName)
+                    .setString(3, profilePic)
+                    .setInstant(4, createdAt)
+                    .setBoolean(5, true));
             
             int current = counter.incrementAndGet();
             if (current % 10 == 0) {
@@ -150,55 +88,42 @@ public class Seeder {
     }
     
     private void seedPosts() {
-        PreparedStatement preparedStatement = session.prepare(
-                "INSERT INTO posts (post_id, user_id, content, media_urls, created_at, updated_at, is_deleted) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?)");
-        
-        AtomicInteger counter = new AtomicInteger(0);
-        
-        IntStream.range(0, NUM_POSTS).forEach(i -> {
+        System.out.println("Seeding posts...");
+        PreparedStatement insertPostStmt = session.prepare(
+            "INSERT INTO posts (post_id, user_id, content, created_at, is_deleted) VALUES (?, ?, ?, ?, ?)");
+        PreparedStatement updatePostMetricsStmt = session.prepare(
+            "UPDATE post_metrics SET comment_count = comment_count + ?, like_count = like_count + ? WHERE post_id = ?");
+
+        for (int i = 0; i < 1000; i++) {
             UUID postId = UUID.randomUUID();
-            postIds.add(postId);
-            
             UUID userId = userIds.get(faker.random().nextInt(userIds.size()));
-            String content = faker.lorem().paragraph(faker.random().nextInt(1, 3));
-            ArrayList<String> mediaUrls = new ArrayList<>();
-            // 30% chance to have media
-            if (faker.random().nextInt(100) < 30) {
-                int numMedia = faker.random().nextInt(1, 4);
-                for (int j = 0; j < numMedia; j++) {
-                    mediaUrls.add("https://example.com/media/" + UUID.randomUUID() + ".jpg");
-                }
-            }
-            Instant createdAt = Instant.now().minusSeconds(faker.number().numberBetween(3600, 1209600)); 
-            Instant updatedAt = createdAt;
-            // 10% chance post was updated
-            if (faker.random().nextInt(100) < 10) {
-                updatedAt = createdAt.plusSeconds(faker.number().numberBetween(60, 86400)); 
-            }
-            
-            session.execute(preparedStatement.bind()
-                    .setUuid(0, postId)
-                    .setUuid(1, userId)
-                    .setString(2, content)
-                    .setList(3, mediaUrls, String.class)
-                    .setInstant(4, createdAt)
-                    .setInstant(5, updatedAt)
-                    .setBoolean(6, false));
-            
-            int current = counter.incrementAndGet();
-            if (current % 20 == 0) {
-                System.out.println("Seeded " + current + " posts");
-            }
-        });
-        
-        System.out.println("Seeded " + NUM_POSTS + " posts");
+            String content = faker.lorem().paragraph(faker.random().nextInt(1, 5));
+            Instant createdAt = Instant.now().minusSeconds(faker.number().numberBetween(300, 2592000));
+            boolean isDeleted = false;
+
+            session.execute(insertPostStmt.bind(
+                postId,
+                userId,
+                content,
+                createdAt,
+                isDeleted
+            ));
+
+            session.execute(updatePostMetricsStmt.bind(0L, 0L, postId));
+
+            postIds.add(postId);
+        }
+        System.out.println("Seeded " + postIds.size() + " posts");
     }
     
     private void seedComments() {
-        PreparedStatement preparedStatement = session.prepare(
-                "INSERT INTO comments (comment_id, post_id, user_id, content, created_at, updated_at, is_deleted) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?)");
+        PreparedStatement commentsByPostStmt = session.prepare(
+                "INSERT INTO comments_by_post (post_id, comment_id, user_id, username, user_profile_pic, content, created_at, updated_at, is_deleted) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        
+        PreparedStatement commentsByUserStmt = session.prepare(
+                "INSERT INTO comments_by_user (user_id, comment_id, post_id, content, created_at, is_deleted) " +
+                "VALUES (?, ?, ?, ?, ?, ?)");
         
         AtomicInteger counter = new AtomicInteger(0);
         
@@ -207,22 +132,37 @@ public class Seeder {
             UUID postId = postIds.get(faker.random().nextInt(postIds.size()));
             UUID userId = userIds.get(faker.random().nextInt(userIds.size()));
             
-            String content = faker.lorem().sentence(faker.random().nextInt(3, 15));
-            Instant createdAt = Instant.now().minusSeconds(faker.number().numberBetween(60, 604800)); 
+            String username = userIdToUsername.get(userId);
+            String userProfilePic = userIdToProfilePic.get(userId);
+            String content = faker.lorem().sentence(faker.random().nextInt(5, 20));
+            Instant createdAt = Instant.now().minusSeconds(faker.number().numberBetween(60, 604800));
             Instant updatedAt = createdAt;
-            // 5% chance comment was updated
+            
             if (faker.random().nextInt(100) < 5) {
-                updatedAt = createdAt.plusSeconds(faker.number().numberBetween(30, 3600)); 
+                updatedAt = createdAt.plusSeconds(faker.number().numberBetween(30, 3600));
             }
             
-            session.execute(preparedStatement.bind()
-                    .setUuid(0, commentId)
-                    .setUuid(1, postId)
-                    .setUuid(2, userId)
-                    .setString(3, content)
-                    .setInstant(4, createdAt)
-                    .setInstant(5, updatedAt)
-                    .setBoolean(6, false));
+            BatchStatement batch = BatchStatement.builder(BatchType.LOGGED)
+                    .addStatement(commentsByPostStmt.bind()
+                            .setUuid(0, postId)
+                            .setUuid(1, commentId)
+                            .setUuid(2, userId)
+                            .setString(3, username)
+                            .setString(4, userProfilePic)
+                            .setString(5, content)
+                            .setInstant(6, createdAt)
+                            .setInstant(7, updatedAt)
+                            .setBoolean(8, false))
+                    .addStatement(commentsByUserStmt.bind()
+                            .setUuid(0, userId)
+                            .setUuid(1, commentId)
+                            .setUuid(2, postId)
+                            .setString(3, content)
+                            .setInstant(4, createdAt)
+                            .setBoolean(5, false))
+                    .build();
+            
+            session.execute(batch);
             
             int current = counter.incrementAndGet();
             if (current % 100 == 0) {
@@ -234,14 +174,13 @@ public class Seeder {
     }
     
     private void seedLikes() {
-        PreparedStatement likesStmt = session.prepare(
-                "INSERT INTO post_likes (post_id, user_id, created_at) VALUES (?, ?, ?)");
+        PreparedStatement postLikesStmt = session.prepare(
+                "INSERT INTO post_likes (post_id, user_id, username, created_at) VALUES (?, ?, ?, ?)");
         
-        PreparedStatement likesByUserStmt = session.prepare(
-                "INSERT INTO likes_by_user (user_id, post_id, created_at) VALUES (?, ?, ?)");
+        PreparedStatement postLikesByUserStmt = session.prepare(
+                "INSERT INTO post_likes_by_user (user_id, post_id, created_at) VALUES (?, ?, ?)");
         
         AtomicInteger counter = new AtomicInteger(0);
-        
         List<String> alreadyLiked = new ArrayList<>();
         
         IntStream.range(0, NUM_LIKES).forEach(i -> {
@@ -254,14 +193,16 @@ public class Seeder {
             }
             alreadyLiked.add(likeKey);
             
-            Instant createdAt = Instant.now().minusSeconds(faker.number().numberBetween(30, 432000)); 
+            String username = userIdToUsername.get(userId);
+            Instant createdAt = Instant.now().minusSeconds(faker.number().numberBetween(30, 432000));
             
             BatchStatement batch = BatchStatement.builder(BatchType.LOGGED)
-                    .addStatement(likesStmt.bind()
+                    .addStatement(postLikesStmt.bind()
                             .setUuid(0, postId)
                             .setUuid(1, userId)
-                            .setInstant(2, createdAt))
-                    .addStatement(likesByUserStmt.bind()
+                            .setString(2, username)
+                            .setInstant(3, createdAt))
+                    .addStatement(postLikesByUserStmt.bind()
                             .setUuid(0, userId)
                             .setUuid(1, postId)
                             .setInstant(2, createdAt))
@@ -276,6 +217,43 @@ public class Seeder {
         });
         
         System.out.println("Seeded " + counter.get() + " likes");
+    }
+    
+    private void updateCounters() {
+        System.out.println("Updating post counters...");
+        
+        Map<UUID, Integer> commentCounts = new HashMap<>();
+        session.execute("SELECT post_id, COUNT(*) as comment_count FROM comments_by_post GROUP BY post_id ALLOW FILTERING")
+                .forEach(row -> {
+                    UUID postId = row.getUuid("post_id");
+                    Long count = row.getLong("comment_count");
+                    commentCounts.put(postId, count.intValue());
+                });
+        
+        Map<UUID, Integer> likeCounts = new HashMap<>();
+        session.execute("SELECT post_id, COUNT(*) as like_count FROM post_likes GROUP BY post_id ALLOW FILTERING")
+                .forEach(row -> {
+                    UUID postId = row.getUuid("post_id");
+                    Long count = row.getLong("like_count");
+                    likeCounts.put(postId, count.intValue());
+                });
+        
+        // Update counters in post_metrics table
+        PreparedStatement updateCommentCount = session.prepare(
+                "UPDATE post_metrics SET comment_count = comment_count + ? WHERE post_id = ?");
+        PreparedStatement updateLikeCount = session.prepare(
+                "UPDATE post_metrics SET like_count = like_count + ? WHERE post_id = ?");
+        
+        commentCounts.forEach((postId, count) -> {
+            session.execute(updateCommentCount.bind(count.longValue(), postId));
+        });
+        
+        likeCounts.forEach((postId, count) -> {
+            session.execute(updateLikeCount.bind(count.longValue(), postId));
+        });
+        
+        System.out.println("Updated counters for " + commentCounts.size() + " posts with comments and " + 
+                          likeCounts.size() + " posts with likes");
     }
     
     public void close() {

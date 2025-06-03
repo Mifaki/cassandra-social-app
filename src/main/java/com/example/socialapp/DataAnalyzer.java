@@ -47,18 +47,8 @@ public class DataAnalyzer {
         long userCount = session.execute("SELECT COUNT(*) FROM users").one().getLong(0);
         long postCount = session.execute("SELECT COUNT(*) FROM posts").one().getLong(0);
         
-        Map<UUID, Integer> commentsByPost = new HashMap<>();
-        for (Row row : session.execute("SELECT post_id, COUNT(*) as count FROM comments GROUP BY post_id").all()) {
-            commentsByPost.put(row.getUuid("post_id"), (int)row.getLong("count"));
-        }
-        
-        Map<UUID, Integer> likesByPost = new HashMap<>();
-        for (Row row : session.execute("SELECT post_id, COUNT(*) as count FROM post_likes GROUP BY post_id").all()) {
-            likesByPost.put(row.getUuid("post_id"), (int)row.getLong("count"));
-        }
-        
-        long totalComments = commentsByPost.values().stream().mapToInt(Integer::intValue).sum();
-        long totalLikes = likesByPost.values().stream().mapToInt(Integer::intValue).sum();
+        long totalComments = session.execute("SELECT SUM(comment_count) FROM post_metrics").one().getLong(0);
+        long totalLikes = session.execute("SELECT SUM(like_count) FROM post_metrics").one().getLong(0);
         
         System.out.println("Users: " + userCount);
         System.out.println("Posts: " + postCount);
@@ -71,7 +61,7 @@ public class DataAnalyzer {
         System.out.println("=== MOST LIKED POSTS ===");
         
         List<Row> results = session.execute(
-                "SELECT post_id, COUNT(*) as like_count FROM post_likes GROUP BY post_id LIMIT 10"
+                "SELECT post_id, like_count FROM post_metrics LIMIT 10"
         ).all();
         
         Map<UUID, Integer> postLikes = new HashMap<>();
@@ -115,20 +105,11 @@ public class DataAnalyzer {
         
         Map<UUID, Integer> commentsByUser = new HashMap<>();
         
-        List<Row> posts = session.execute("SELECT post_id FROM posts LIMIT 1000").all();
+        List<Row> comments = session.execute("SELECT user_id FROM comments_by_user LIMIT 1000").all();
         
-        for (Row postRow : posts) {
-            UUID postId = postRow.getUuid("post_id");
-            
-            List<Row> comments = session.execute(
-                    "SELECT user_id FROM comments WHERE post_id = ?", 
-                    postId
-            ).all();
-            
-            for (Row commentRow : comments) {
-                UUID userId = commentRow.getUuid("user_id");
-                commentsByUser.put(userId, commentsByUser.getOrDefault(userId, 0) + 1);
-            }
+        for (Row commentRow : comments) {
+            UUID userId = commentRow.getUuid("user_id");
+            commentsByUser.put(userId, commentsByUser.getOrDefault(userId, 0) + 1);
         }
         
         commentsByUser.entrySet().stream()
@@ -160,12 +141,15 @@ public class DataAnalyzer {
         for (Row postRow : posts) {
             UUID postId = postRow.getUuid("post_id");
             
-            long commentCount = session.execute(
-                "SELECT COUNT(*) FROM comments WHERE post_id = ?", 
+            Row metricsRow = session.execute(
+                "SELECT comment_count FROM post_metrics WHERE post_id = ?", 
                 postId
-            ).one().getLong(0);
+            ).one();
             
-            commentsByPost.put(postId, commentCount);
+            if (metricsRow != null) {
+                long commentCount = metricsRow.getLong("comment_count");
+                commentsByPost.put(postId, commentCount);
+            }
         }
         
         commentsByPost.entrySet().stream()
@@ -206,33 +190,24 @@ public class DataAnalyzer {
             commentsByHour.put(i, 0);
         }
         
-        List<Row> posts = session.execute("SELECT post_id FROM posts LIMIT 1000").all();
+        List<Row> commentRows = session.execute("SELECT created_at FROM comments_by_user LIMIT 1000").all();
         
-        for (Row postRow : posts) {
-            UUID postId = postRow.getUuid("post_id");
+        for (Row commentRow : commentRows) {
+            Instant createdAt = commentRow.getInstant("created_at");
+            LocalDateTime dateTime = LocalDateTime.ofInstant(createdAt, ZoneId.systemDefault());
+            int hour = dateTime.getHour();
             
-            List<Row> comments = session.execute(
-                    "SELECT created_at FROM comments WHERE post_id = ?", 
-                    postId
-            ).all();
-            
-            for (Row commentRow : comments) {
-                Instant createdAt = commentRow.getInstant("created_at");
-                LocalDateTime dateTime = LocalDateTime.ofInstant(createdAt, ZoneId.systemDefault());
-                int hour = dateTime.getHour();
-                
-                commentsByHour.put(hour, commentsByHour.get(hour) + 1);
-            }
+            commentsByHour.put(hour, commentsByHour.get(hour) + 1);
         }
         
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("ha");
         for (int hour = 0; hour < 24; hour++) {
-            int comments = commentsByHour.get(hour);
+            int commentCount = commentsByHour.get(hour);
             String timeLabel = LocalDateTime.of(2023, 1, 1, hour, 0).format(formatter);
             System.out.printf("%s: %s (%d comments)%n", 
                     timeLabel, 
-                    "#".repeat(Math.min(50, comments)), 
-                    comments);
+                    "#".repeat(Math.min(50, commentCount)), 
+                    commentCount);
         }
     }
     
